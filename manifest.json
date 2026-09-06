@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.adembenabdallah.port-manager",
+  "name": "Port Manager",
+  "version": "2.0.0",
+  "author": "Adem",
+  "license": "MIT",
+  "description": "Every port listening on this machine, named by the project that holds it — with a keyboard-first panel to open, copy, or stop it.",
+  "kinds": ["bar-widget"],
+  "entryPoints": { "barWidget": "Panel.qml" },
+  "barWidget": {
+    "displayName": "Port Manager",
+    "description": "Listening ports, grouped by project, with open / copy / stop",
+    "category": "Developer Tools",
+    "aliases": ["ports", "port-manager"],
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "refreshIntervalSec": 20,
+      "showCount": true
+    },
+    "schema": [
+      {
+        "key": "refreshIntervalSec",
+        "type": "integer",
+        "label": "Background refresh (seconds)",
+        "description": "How often the bar count updates while the panel is closed. The open panel always refreshes every 2.5 seconds.",
+        "min": 5,
+        "max": 600,
+        "step": 5,
+        "defaultValue": 20
+      },
+      {
+        "key": "showCount",
+        "type": "boolean",
+        "label": "Show server count in the bar",
+        "description": "Print the number of running dev servers next to the icon.",
+        "defaultValue": true
+      }
+    ]
+  }
+}
