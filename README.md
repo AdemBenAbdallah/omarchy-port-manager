@@ -81,8 +81,8 @@ omarchy plugin add https://github.com/AdemBenAbdallah/omarchy-port-manager.git -
 ```
 
 That is the whole install. `omarchy plugin add` clones the repository, validates
-the manifest, and shows you the code before anything is enabled; it never runs
-an install hook and never asks for sudo.
+the manifest, and shows you the code before anything is enabled; it runs no
+install hook and requests no elevated privileges.
 
 To install without the plugin manager, place the contents of this repository in
 a directory named for the plugin id — `~/.config/omarchy/plugins/io.github.adembenabdallah.port-manager/`
@@ -128,7 +128,7 @@ omarchy-shell port-manager ports        # current rows as JSON
 
 - A process is only signalled when `/proc/<pid>` is owned by your uid.
 - PID 1 and below are refused outright.
-- Nothing runs as root, no sudo, no polkit, no network access.
+- Everything runs as your own user. No privilege escalation, no network access.
 - The only external command is `ss -H -ltnup` from `iproute2`; everything else
   is a read from `/proc`.
 
