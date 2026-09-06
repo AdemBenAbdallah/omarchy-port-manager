@@ -80,14 +80,14 @@ actually exited, so the panel reports what happened rather than guessing.
 omarchy plugin add https://github.com/AdemBenAbdallah/omarchy-port-manager.git --enable --yes
 ```
 
-Or by hand:
+That is the whole install. `omarchy plugin add` clones the repository, validates
+the manifest, and shows you the code before anything is enabled; it never runs
+an install hook and never asks for sudo.
 
-```bash
-git clone https://github.com/AdemBenAbdallah/omarchy-port-manager.git \
-  ~/.config/omarchy/plugins/io.github.adembenabdallah.port-manager
-omarchy-restart-shell
-omarchy plugin enable io.github.adembenabdallah.port-manager
-```
+To install without the plugin manager, place the contents of this repository in
+a directory named for the plugin id — `~/.config/omarchy/plugins/io.github.adembenabdallah.port-manager/`
+— then run `omarchy-restart-shell` and
+`omarchy plugin enable io.github.adembenabdallah.port-manager`.
 
 > Changing a plugin's `entryPoints` requires `omarchy-restart-shell`, not just
 > `rescanPlugins` — the bar caches the widget component by URL.
