@@ -17,10 +17,10 @@ it reachable from outside this machine**, and **how do I stop it**.
 │  │ Filter by port, project, stack, or PID…    │  │
 │  └────────────────────────────────────────────┘  │
 │  DEV SERVERS                                     │
-│  ▌5173    fakeproj                  (EXPOSED)    │
-│           Python · python3 · PID 239145 · 5m     │
-│  ▌8099    checkout-api                           │
-│           Node · node · PID 1099 · 3h 4m · 78 MB │
+│  ▌3000    checkout-api              (EXPOSED)    │
+│           Rails · puma · PID 4412 · 1h 6m · 91 MB│
+│  ▌5173    docs-site                              │
+│           Vite · node · PID 4820 · 12m · 78 MB   │
 │  ⌄ OTHER SOCKETS YOU OWN  (2)                a   │
 │  ⌄ SYSTEM SOCKETS  (11)                      s   │
 │  ↑↓ move  ⏎ open  y copy URL  x stop  X force    │
