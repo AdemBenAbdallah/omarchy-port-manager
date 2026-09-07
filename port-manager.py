@@ -8,7 +8,10 @@ refresh.
 
 Commands:
     (none)              list every listening socket
-    stop PID [--force]  SIGTERM (or SIGKILL) a process this user owns
+    stop PID [--force] [--identity PID:TICKS]
+                        SIGTERM (or SIGKILL) a process this user owns.
+                        --identity binds the request to one specific
+                        process so a recycled PID can never be signalled.
     kill-port PORT      stop whatever holds PORT
     check PORT          report whether PORT is free, and who holds it
 """
@@ -116,11 +119,54 @@ def read_text(path):
         return ""
 
 
-def owner_is_current_user(pid):
+def process_uid(pid):
     try:
-        return os.stat(f"/proc/{pid}").st_uid == os.getuid()
+        return os.stat(f"/proc/{pid}").st_uid
     except (FileNotFoundError, PermissionError, OSError):
-        return False
+        return None
+
+
+def owner_is_current_user(pid):
+    return process_uid(pid) == os.getuid()
+
+
+def stat_fields(pid):
+    """Fields of /proc/<pid>/stat after comm, which may contain spaces."""
+    stat = read_text(f"/proc/{pid}/stat")
+    cut = stat.rfind(")") if stat else -1
+    if cut < 0:
+        return []
+    return stat[cut + 2:].split()
+
+
+def start_ticks(pid):
+    """Field 22 of /proc/<pid>/stat: start time in clock ticks since boot."""
+    fields = stat_fields(pid)
+    if len(fields) < 20:
+        return 0
+    try:
+        return int(fields[19])
+    except ValueError:
+        return 0
+
+
+def process_state(pid):
+    """The single-character state from /proc/<pid>/stat, e.g. R, S, Z."""
+    fields = stat_fields(pid)
+    return fields[0] if fields else ""
+
+
+def identity_token(pid):
+    """A stable identity for a running process, as `<pid>:<start ticks>`.
+
+    A PID on its own is not an identity. Linux recycles PIDs, so a snapshot
+    the panel took seconds ago can name a PID that now belongs to something
+    else entirely — and a bare uid check would happily pass on that stranger,
+    because it is also owned by you. Pairing the PID with its start time gives
+    a token the kernel cannot hand to a second process.
+    """
+    ticks = start_ticks(pid)
+    return f"{pid}:{ticks}" if ticks else ""
 
 
 def command_line(pid):
@@ -157,24 +203,15 @@ def project_name(cwd):
 
 
 def uptime_seconds(pid):
-    stat = read_text(f"/proc/{pid}/stat")
-    if not stat:
-        return 0
-    # The comm field can contain spaces and parentheses, so start counting
-    # fields after the final ')'.
-    tail = stat[stat.rfind(")") + 2:].split()
-    if len(tail) < 20:
-        return 0
-    try:
-        started = int(tail[19]) / CLOCK_TICKS
-    except (ValueError, ZeroDivisionError):
+    ticks = start_ticks(pid)
+    if not ticks:
         return 0
     boot = read_text("/proc/uptime").split()
-    if not boot:
+    if not boot or not CLOCK_TICKS:
         return 0
     try:
-        return max(0, int(float(boot[0]) - started))
-    except ValueError:
+        return max(0, int(float(boot[0]) - ticks / CLOCK_TICKS))
+    except (ValueError, ZeroDivisionError):
         return 0
 
 
@@ -258,6 +295,7 @@ def describe_process(pid):
     cwd = working_directory(pid)
     project, project_path = project_name(cwd)
     return {
+        "identity": identity_token(pid),
         "cmdline": cmdline,
         "cwd": cwd,
         "project": project,
@@ -325,6 +363,7 @@ def list_ports():
             row.update(describe_process(pid))
         else:
             row.update({
+                "identity": "",
                 "cmdline": "",
                 "cwd": "",
                 "project": "",
@@ -349,28 +388,109 @@ def list_ports():
     return {"ok": True, "ports": rows, "generatedAt": int(time.time())}
 
 
-def stop_process(pid, force=False):
+CHANGED_MESSAGE = (
+    "That listener is gone — PID {pid} now belongs to a different process. "
+    "Nothing was signalled. Refresh and try again."
+)
+
+
+def signal_by_pidfd(pid, sig, expect):
+    """Signal exactly the process `expect` names, or nothing at all.
+
+    A pidfd refers to a process, not to a number. Once it is open the kernel
+    will not let the signal land on a later process that recycled the PID; it
+    reports ESRCH instead. The identity is re-read after the pidfd is open to
+    close the one remaining window — the PID could have been recycled between
+    our first read and the open — so on any mismatch we signal nothing.
+    """
+    try:
+        fd = os.pidfd_open(pid)
+    except ProcessLookupError:
+        return {"ok": False, "error": "The process has already exited."}
+    except PermissionError:
+        return {"ok": False, "error": "Permission denied."}
+    except (AttributeError, OSError):
+        return signal_by_pid(pid, sig, expect)
+
+    try:
+        if identity_token(pid) != expect or not owner_is_current_user(pid):
+            return {"ok": False, "changed": True,
+                    "error": CHANGED_MESSAGE.format(pid=pid)}
+        try:
+            signal.pidfd_send_signal(fd, sig)
+        except ProcessLookupError:
+            return {"ok": False, "error": "The process has already exited."}
+        except PermissionError:
+            return {"ok": False, "error": "Permission denied."}
+        except (AttributeError, OSError):
+            return signal_by_pid(pid, sig, expect)
+        return True
+    finally:
+        os.close(fd)
+
+
+def signal_by_pid(pid, sig, expect):
+    """Fallback for kernels or interpreters without pidfd.
+
+    Re-checks identity immediately before os.kill. That narrows the race to
+    the gap between the check and the call rather than removing it, which is
+    the best os.kill can offer; the pidfd path above is preferred everywhere
+    it is available.
+    """
+    if identity_token(pid) != expect or not owner_is_current_user(pid):
+        return {"ok": False, "changed": True,
+                "error": CHANGED_MESSAGE.format(pid=pid)}
+    try:
+        os.kill(pid, sig)
+    except ProcessLookupError:
+        return {"ok": False, "error": "The process has already exited."}
+    except PermissionError:
+        return {"ok": False, "error": "Permission denied."}
+    return True
+
+
+def stop_process(pid, force=False, expect_identity=""):
     try:
         pid = int(pid)
     except (TypeError, ValueError):
         return {"ok": False, "error": "Invalid process ID."}
     if pid <= 1:
         return {"ok": False, "error": "Refusing to signal PID {}.".format(pid)}
+
+    expect = str(expect_identity or "").strip()
+
+    # Identity first, before the owner check and before any signal. A caller
+    # holding a token from a snapshot has to still describe the process on this
+    # PID. A caller without one — someone typing a PID at the shell — gets the
+    # identity read now, and we hold ourselves to it for the rest of the call.
+    current = identity_token(pid)
+    if not current:
+        return {"ok": False, "error": "The process has already exited."}
+    if expect and expect != current:
+        return {"ok": False, "changed": True, "error": CHANGED_MESSAGE.format(pid=pid)}
+    expect = current
+
     if not owner_is_current_user(pid):
         return {"ok": False, "error": "This process is not owned by your user."}
+
     name = read_text(f"/proc/{pid}/comm").strip() or f"PID {pid}"
-    try:
-        os.kill(pid, signal.SIGKILL if force else signal.SIGTERM)
-    except ProcessLookupError:
-        return {"ok": False, "error": "The process has already exited."}
-    except PermissionError:
-        return {"ok": False, "error": "Permission denied."}
+    sig = signal.SIGKILL if force else signal.SIGTERM
+
+    sent = signal_by_pidfd(pid, sig, expect)
+    if sent is not True:
+        return sent
 
     # Give a graceful stop a moment to land so the panel can report the real
-    # outcome instead of an optimistic one.
+    # outcome instead of an optimistic one. The identity, not the presence of
+    # /proc/<pid>, is what says our process is gone: the directory can come
+    # back as somebody else.
     deadline = time.time() + (0.4 if force else 1.5)
     while time.time() < deadline:
-        if not os.path.exists(f"/proc/{pid}"):
+        # Identity, not the presence of /proc/<pid>, is what says our process
+        # is gone: the directory can come back as somebody else. A zombie
+        # keeps both the PID and the start time until its parent reaps it, so
+        # count that as exited too — it has run its last instruction.
+        if identity_token(pid) != expect or process_state(pid) == "Z":
             return {"ok": True, "exited": True, "process": name}
         time.sleep(0.05)
     return {"ok": True, "exited": False, "process": name}
@@ -396,7 +516,7 @@ def kill_port(port, force=False):
         return {"ok": False, "error": f"Nothing is listening on port {port}."}
     if not row["canStop"]:
         return {"ok": False, "error": f"Port {port} is held by {row['process']}, which you do not own."}
-    return stop_process(row["pid"], force)
+    return stop_process(row["pid"], force, row.get("identity", ""))
 
 
 def check_port(port):
@@ -420,11 +540,21 @@ def check_port(port):
     }
 
 
+def flag_value(argv, name):
+    """Read `--name value` out of argv, or return an empty string."""
+    if name in argv:
+        index = argv.index(name)
+        if index + 1 < len(argv):
+            return argv[index + 1]
+    return ""
+
+
 def main(argv):
     command = argv[1] if len(argv) > 1 else ""
     force = "--force" in argv
+    identity = flag_value(argv, "--identity")
     if command == "stop" and len(argv) > 2:
-        return stop_process(argv[2], force)
+        return stop_process(argv[2], force, identity)
     if command == "kill-port" and len(argv) > 2:
         return kill_port(argv[2], force)
     if command == "check" and len(argv) > 2:

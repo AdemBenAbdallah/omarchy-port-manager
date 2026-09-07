@@ -43,7 +43,8 @@ it reachable from outside this machine**, and **how do I stop it**.
 - **Names system ports it cannot inspect.** `ss` will not tell a normal user
   which process owns port 53, so the panel says "DNS" rather than "unknown".
 - **Stops things safely.** Only processes your own user owns can be signalled,
-  never PID 1, and every stop is armed before it fires.
+  never PID 1, and every stop is armed before it fires — and it is bound to
+  one specific process, not to a PID that may have been recycled.
 
 ## Keys
 
@@ -73,6 +74,26 @@ breaks the keyboard flow for the one action you are most likely to repeat.
 
 After a SIGTERM the backend waits up to 1.5s to see whether the process
 actually exited, so the panel reports what happened rather than guessing.
+
+### Why a PID is not enough
+
+The panel acts on a snapshot, and Linux recycles PIDs. If the listener you are
+looking at exits and the kernel hands its PID to something else you also own, a
+plain owner check would pass on that stranger and stop the wrong program.
+
+So every row carries an identity — its PID paired with the process start time
+from `/proc/<pid>/stat`, which the kernel cannot hand to a second process — and
+the stop request carries it too. The backend refuses outright if it no longer
+matches, and tells you the listener is gone rather than signalling anything.
+The signal itself goes through `os.pidfd_open()` and
+`signal.pidfd_send_signal()`: a pidfd refers to a *process*, not a number, so
+even if the PID were recycled in the instant between the check and the signal,
+the kernel reports `ESRCH` instead of delivering it to the new owner. The
+identity is also re-read after the pidfd is open, and is part of the arm key,
+so a row that changes underneath you disarms instead of firing.
+
+On a kernel or interpreter without pidfd the code falls back to `os.kill`,
+still gated on the same identity check immediately beforehand.
 
 ## Install
 
@@ -114,6 +135,10 @@ python3 port-manager.py                 # every listening socket, as JSON
 python3 port-manager.py check 3000      # free? who holds it? next free port?
 python3 port-manager.py kill-port 3000  # stop whatever holds it
 python3 port-manager.py stop 12345      # stop by PID (--force for SIGKILL)
+
+# The panel always passes --identity so a recycled PID can never be hit.
+# Given by hand, the identity is read fresh at the start of the call instead.
+python3 port-manager.py stop 12345 --identity 12345:2332266
 ```
 
 And over shell IPC:
@@ -126,7 +151,9 @@ omarchy-shell port-manager ports        # current rows as JSON
 
 ## Safety
 
-- A process is only signalled when `/proc/<pid>` is owned by your uid.
+- A process is only signalled when `/proc/<pid>` is owned by your uid **and**
+  its start time still matches the one recorded when the row was listed.
+- Signals are delivered through a pidfd, so a recycled PID cannot be hit.
 - PID 1 and below are refused outright.
 - Everything runs as your own user. No privilege escalation, no network access.
 - The only external command is `ss -H -ltnup` from `iproute2`; everything else
@@ -135,7 +162,11 @@ omarchy-shell port-manager ports        # current rows as JSON
 ## Requirements
 
 Omarchy Quattro (shell plugin API v1), `iproute2` for `ss`, `wl-clipboard` for
-copy, and `xdg-utils` for open. Python 3.8+.
+copy, and `xdg-utils` for open.
+
+Python 3.9+ and Linux 5.3+ for pidfd signalling, which is what Omarchy ships.
+On anything older the plugin still works and still refuses to signal a process
+whose identity changed; it just falls back to `os.kill` for the delivery.
 
 ## Layout
 
@@ -145,6 +176,7 @@ copy, and `xdg-utils` for open. Python 3.8+.
 | `Panel.qml` | Bar widget and panel — the only entry point |
 | `Model.js` | Filtering, grouping, and string shaping |
 | `port-manager.py` | Socket enumeration and process control |
+| `test_stop_safety.py` | Regression tests for the stop path — `python3 test_stop_safety.py` |
 
 ## License
 

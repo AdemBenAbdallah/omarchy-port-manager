@@ -63,8 +63,11 @@ Panel {
     if (!listProc.running) listProc.running = true
   }
 
+  // Identity is part of the key, so an armed row disarms itself if the process
+  // behind it is replaced between the two keypresses rather than carrying the
+  // arm over to whatever took its place.
   function rowKey(row) {
-    return row ? row.pid + ":" + row.port + ":" + row.protocol : ""
+    return row ? row.pid + ":" + row.port + ":" + row.protocol + ":" + (row.identity || "") : ""
   }
 
   function setStatus(text, isError) {
@@ -148,13 +151,17 @@ Panel {
     armProgress = 0
   }
 
+  // The snapshot this row came from is up to one refresh old, so the PID alone
+  // is not enough to name what we mean — Linux may have recycled it. The
+  // identity token pins the request to one specific process, and the backend
+  // signals nothing at all if it no longer matches.
   function stop(row, force) {
     disarm()
     stopProc.pendingName = row.process
     stopProc.pendingForce = force
-    stopProc.command = force
-      ? ["python3", root.script, "stop", String(row.pid), "--force"]
-      : ["python3", root.script, "stop", String(row.pid)]
+    var argv = ["python3", root.script, "stop", String(row.pid),
+                "--identity", String(row.identity || "")]
+    stopProc.command = force ? argv.concat(["--force"]) : argv
     stopProc.running = true
   }
 
