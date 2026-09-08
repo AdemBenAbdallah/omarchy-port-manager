@@ -2,7 +2,8 @@
 
 Every port listening on this machine, named by the project that holds it.
 
-![Port Manager in the Omarchy bar]<img width="643" height="475" alt="image" src="https://github.com/user-attachments/assets/c4f89d7f-4710-4a90-80b3-9efb3b245b31" />
+![Port Manager in the Omarchy bar]<img width="678" height="495" alt="image" src="https://github.com/user-attachments/assets/4b3a4cee-242c-4985-960f-cb532d0ad0f1" />
+
 
 One bar icon shows how many dev servers are up. Click it and the panel answers
 the three questions you actually have, in that order: **what is running**, **is
